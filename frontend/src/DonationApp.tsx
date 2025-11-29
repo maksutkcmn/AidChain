@@ -4,10 +4,12 @@ import { CoordinatorPanel } from './CoordinatorPanel';
 import { DonationForm } from './DonationForm';
 import { RecipientRegistration } from './RecipientRegistration';
 import { RecipientList } from './RecipientList';
-import { RecipientVerification } from './RecipientVerification';
+import { VerifierManagement } from './VerifierManagement';
+import { DAOPanel } from './DAOPanel';
+import { AIDCHAIN_REGISTRY_ID } from './config';
 
 export function DonationApp() {
-  const [activeTab, setActiveTab] = useState<'donate' | 'packages' | 'register' | 'verify' | 'recipients'>('donate');
+  const [activeTab, setActiveTab] = useState<'donate' | 'packages' | 'register' | 'recipients' | 'dao-members' | 'dao-voting'>('donate');
 
   return (
     <div className="app-container">
@@ -24,36 +26,62 @@ export function DonationApp() {
         </div>
       </header>
 
+      <div className="alert alert-info" style={{ margin: '1rem 0' }}>
+        <span>ℹ️</span>
+        <div>
+          <strong>🌐 AidChain V8 - DAO Sistemi</strong>
+          <div style={{ marginTop: '0.5rem', fontSize: '0.85rem' }}>
+            DAO üyeleri kalıcıdır - bir kez eklenen üye blockchain'den çıkarılamaz!
+          </div>
+          <div style={{ marginTop: '0.5rem' }}>
+            <a
+              href={`https://testnet.suivision.xyz/object/${AIDCHAIN_REGISTRY_ID}`}
+              target="_blank"
+              rel="noreferrer"
+              style={{ fontSize: '0.75rem', color: 'var(--primary-color)', textDecoration: 'none' }}
+            >
+              🔍 SuiVision'da Görüntüle →
+            </a>
+          </div>
+        </div>
+      </div>
+
       <div className="tab-nav">
         <button
           onClick={() => setActiveTab('donate')}
           className={`tab-button ${activeTab === 'donate' ? 'active' : ''}`}
         >
-          Bağış Yap
+          💝 Bağış Yap
         </button>
         <button
           onClick={() => setActiveTab('packages')}
           className={`tab-button ${activeTab === 'packages' ? 'active' : ''}`}
         >
-          Paketler
+          📦 Paketler
         </button>
         <button
           onClick={() => setActiveTab('register')}
           className={`tab-button ${activeTab === 'register' ? 'active' : ''}`}
         >
-          Yardım Al
+          🙏 Yardım Al
         </button>
         <button
           onClick={() => setActiveTab('recipients')}
           className={`tab-button ${activeTab === 'recipients' ? 'active' : ''}`}
         >
-          Alıcılar
+          👥 Alıcılar
         </button>
         <button
-          onClick={() => setActiveTab('verify')}
-          className={`tab-button ${activeTab === 'verify' ? 'active' : ''}`}
+          onClick={() => setActiveTab('dao-members')}
+          className={`tab-button ${activeTab === 'dao-members' ? 'active' : ''}`}
         >
-          Onay Paneli
+          🏛️ DAO Üyeleri
+        </button>
+        <button
+          onClick={() => setActiveTab('dao-voting')}
+          className={`tab-button ${activeTab === 'dao-voting' ? 'active' : ''}`}
+        >
+          🗳️ Oylama
         </button>
       </div>
 
@@ -81,10 +109,16 @@ export function DonationApp() {
             <RecipientList showVerifiedOnly={false} />
           </section>
         )}
-        
-        {activeTab === 'verify' && (
+
+        {activeTab === 'dao-members' && (
           <section style={{ gridColumn: '1 / -1' }}>
-            <RecipientVerification />
+            <VerifierManagement />
+          </section>
+        )}
+
+        {activeTab === 'dao-voting' && (
+          <section style={{ gridColumn: '1 / -1' }}>
+            <DAOPanel />
           </section>
         )}
       </main>

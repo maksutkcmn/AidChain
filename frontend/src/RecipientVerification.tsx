@@ -1,11 +1,11 @@
 import { useState, useEffect } from 'react';
 import { useCurrentAccount, useSignAndExecuteTransaction, useSuiClient } from '@mysten/dapp-kit';
 import { Transaction } from '@mysten/sui/transactions';
-import { 
-  AIDCHAIN_PACKAGE_ID, 
-  AIDCHAIN_REGISTRY_ID, 
+import {
+  AIDCHAIN_PACKAGE_ID,
+  AIDCHAIN_REGISTRY_ID,
   REGISTRY_INITIAL_SHARED_VERSION,
-  WALRUS_AGGREGATOR_URL 
+  WALRUS_AGGREGATOR_URL
 } from './config';
 
 interface RecipientProfile {
@@ -13,20 +13,20 @@ interface RecipientProfile {
   owner: string;
   name: string;
   location: string;
-  needCategory: string;
   isVerified: boolean;
   registeredAtEpoch: string;
   phone: string;
   familySize: number;
   description: string;
-  evidenceBlobId: string;
+  residenceBlobId: string;
+  incomeBlobId: string;
 }
 
 export function RecipientVerification() {
   const currentAccount = useCurrentAccount();
   const { mutate: signAndExecute } = useSignAndExecuteTransaction();
   const client = useSuiClient();
-  
+
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [unverifiedRecipients, setUnverifiedRecipients] = useState<RecipientProfile[]>([]);
@@ -34,7 +34,6 @@ export function RecipientVerification() {
   const [registryAdmin, setRegistryAdmin] = useState<string | null>(null);
   const [creatingRegistry, setCreatingRegistry] = useState(false);
 
-  // Admin'i blockchain'den oku
   useEffect(() => {
     const loadAdmin = async () => {
       try {
@@ -82,21 +81,21 @@ export function RecipientVerification() {
 
             if (profileObj.data?.content?.dataType === 'moveObject') {
               const f = profileObj.data.content.fields as any;
-              const owner = profileObj.data.owner;
+              const owner = profileObj.data?.owner;
 
               if (!f.is_verified) {
                 return {
                   id: profileId,
-                  owner: typeof owner === 'object' && 'AddressOwner' in owner ? owner.AddressOwner : 'Unknown',
+                  owner: typeof owner === 'object' && owner && 'AddressOwner' in owner ? owner.AddressOwner : 'Unknown',
                   name: f.name,
                   location: f.location,
-                  needCategory: f.need_category,
                   isVerified: f.is_verified,
                   registeredAtEpoch: f.registered_at_epoch,
                   phone: f.phone || '',
                   familySize: parseInt(f.family_size) || 1,
                   description: f.description || '',
-                  evidenceBlobId: f.evidence_blob_id || '',
+                  residenceBlobId: f.residence_blob_id || '',
+                  incomeBlobId: f.income_blob_id || '',
                 };
               }
             }
@@ -120,10 +119,9 @@ export function RecipientVerification() {
 
   const handleCreateRegistry = async () => {
     if (!currentAccount) return;
-    
+
     setCreatingRegistry(true);
     setMessage('');
-
     try {
       const txb = new Transaction();
       txb.moveCall({
@@ -140,7 +138,6 @@ export function RecipientVerification() {
             });
 
             if (status.effects?.status?.status === 'success') {
-              // Yeni registry ID'yi bul
               const created = status.objectChanges?.find(
                 (c: any) => c.type === 'created' && c.objectType?.includes('AidRegistry')
               );
@@ -171,7 +168,7 @@ export function RecipientVerification() {
 
     try {
       const txb = new Transaction();
-      
+
       txb.moveCall({
         target: `${AIDCHAIN_PACKAGE_ID}::aidchain::verify_recipient`,
         arguments: [
@@ -223,12 +220,12 @@ export function RecipientVerification() {
   if (!isCoordinator) {
     return (
       <div className="card">
-        <h2>Onay Paneli</h2>
-        
-        <div style={{ 
-          padding: '20px', 
-          background: '#fef3c7', 
-          borderRadius: '12px', 
+        <h2>STK Onay Paneli</h2>
+
+        <div style={{
+          padding: '20px',
+          background: '#fef3c7',
+          borderRadius: '12px',
           marginBottom: '20px',
           border: '1px solid #fcd34d',
         }}>
@@ -238,13 +235,13 @@ export function RecipientVerification() {
           <div style={{ fontSize: '14px', color: '#78350f', marginBottom: '12px' }}>
             Bu paneli kullanmak için registry admin'i olmanız gerekiyor.
           </div>
-          
+
           {registryAdmin && (
             <div style={{ fontSize: '13px', color: '#92400e', marginBottom: '8px' }}>
               Mevcut Admin: <code style={{ background: '#fde68a', padding: '2px 6px', borderRadius: '4px' }}>{shortenAddress(registryAdmin)}</code>
             </div>
           )}
-          
+
           {currentAccount && (
             <div style={{ fontSize: '13px', color: '#92400e' }}>
               Sizin Adresiniz: <code style={{ background: '#fde68a', padding: '2px 6px', borderRadius: '4px' }}>{shortenAddress(currentAccount.address)}</code>
@@ -252,9 +249,9 @@ export function RecipientVerification() {
           )}
         </div>
 
-        <div style={{ 
-          padding: '20px', 
-          background: '#f0fdf4', 
+        <div style={{
+          padding: '20px',
+          background: '#f0fdf4',
           borderRadius: '12px',
           border: '1px solid #86efac',
         }}>
@@ -264,12 +261,12 @@ export function RecipientVerification() {
           <div style={{ fontSize: '14px', color: '#15803d', marginBottom: '16px' }}>
             Yeni bir registry oluşturarak admin olabilirsiniz. Sonra config.ts'yi güncellemeniz gerekecek.
           </div>
-          
+
           {message && (
-            <div style={{ 
-              padding: '12px', 
-              background: message.includes('oluşturuldu') ? '#dcfce7' : '#fee2e2', 
-              borderRadius: '8px', 
+            <div style={{
+              padding: '12px',
+              background: message.includes('oluşturuldu') ? '#dcfce7' : '#fee2e2',
+              borderRadius: '8px',
               marginBottom: '12px',
               fontSize: '13px',
               wordBreak: 'break-all',
@@ -277,7 +274,7 @@ export function RecipientVerification() {
               {message}
             </div>
           )}
-          
+
           <button
             onClick={handleCreateRegistry}
             disabled={creatingRegistry || !currentAccount}
@@ -327,8 +324,8 @@ export function RecipientVerification() {
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
           {unverifiedRecipients.map((recipient) => (
-            <div 
-              key={recipient.id} 
+            <div
+              key={recipient.id}
               style={{
                 border: '1px solid #e5e7eb',
                 borderRadius: '12px',
@@ -336,7 +333,6 @@ export function RecipientVerification() {
                 background: '#fff',
               }}
             >
-              {/* Header */}
               <div style={{
                 padding: '16px 20px',
                 borderBottom: '1px solid #f3f4f6',
@@ -365,23 +361,13 @@ export function RecipientVerification() {
                 </div>
               </div>
 
-              {/* Body */}
               <div style={{ padding: '20px' }}>
-                {/* Info Grid */}
-                <div style={{ 
-                  display: 'grid', 
-                  gridTemplateColumns: '1fr 1fr 1fr', 
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: '1fr 1fr',
                   gap: '12px',
                   marginBottom: '16px',
                 }}>
-                  <div style={{ padding: '12px', background: '#f9fafb', borderRadius: '8px' }}>
-                    <div style={{ fontSize: '11px', color: '#9ca3af', marginBottom: '4px', textTransform: 'uppercase' }}>
-                      Kategori
-                    </div>
-                    <div style={{ fontSize: '14px', fontWeight: '500', color: '#374151' }}>
-                      {recipient.needCategory}
-                    </div>
-                  </div>
                   <div style={{ padding: '12px', background: '#f9fafb', borderRadius: '8px' }}>
                     <div style={{ fontSize: '11px', color: '#9ca3af', marginBottom: '4px', textTransform: 'uppercase' }}>
                       Telefon
@@ -400,11 +386,10 @@ export function RecipientVerification() {
                   </div>
                 </div>
 
-                {/* Description */}
                 {recipient.description && (
-                  <div style={{ 
-                    padding: '12px 16px', 
-                    background: '#f8fafc', 
+                  <div style={{
+                    padding: '12px 16px',
+                    background: '#f8fafc',
                     borderRadius: '8px',
                     marginBottom: '16px',
                   }}>
@@ -417,40 +402,63 @@ export function RecipientVerification() {
                   </div>
                 )}
 
-                {/* Evidence Photo */}
-                {recipient.evidenceBlobId && (
-                  <div style={{ marginBottom: '16px' }}>
-                    <div style={{ fontSize: '11px', color: '#9ca3af', marginBottom: '8px', textTransform: 'uppercase' }}>
-                      Kanıt Belgesi (Walrus)
-                    </div>
-                    <a
-                      href={getWalrusUrl(recipient.evidenceBlobId)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      style={{
-                        display: 'block',
-                        padding: '12px 16px',
-                        background: '#f1f5f9',
-                        borderRadius: '8px',
-                        color: '#475569',
-                        textDecoration: 'none',
-                        fontSize: '13px',
-                      }}
-                    >
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <div>
-                          <div style={{ fontWeight: '500', color: '#334155' }}>Fotoğrafı Görüntüle</div>
-                          <div style={{ fontSize: '11px', fontFamily: 'monospace', color: '#94a3b8', marginTop: '2px' }}>
-                            {recipient.evidenceBlobId.slice(0, 20)}...
-                          </div>
-                        </div>
-                        <span>→</span>
-                      </div>
-                    </a>
+                {/* Belgeler */}
+                <div style={{ marginBottom: '16px' }}>
+                  <div style={{ fontSize: '11px', color: '#9ca3af', marginBottom: '8px', textTransform: 'uppercase' }}>
+                    Yüklenen Belgeler (Walrus)
                   </div>
-                )}
+                  
+                  <div style={{ display: 'flex', gap: '12px' }}>
+                    {recipient.residenceBlobId && (
+                      <a
+                        href={getWalrusUrl(recipient.residenceBlobId)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{
+                          flex: 1,
+                          display: 'block',
+                          padding: '12px 16px',
+                          background: '#f0fdf4',
+                          borderRadius: '8px',
+                          color: '#166534',
+                          textDecoration: 'none',
+                          fontSize: '13px',
+                          border: '1px solid #86efac',
+                        }}
+                      >
+                        <div style={{ fontWeight: '600', marginBottom: '4px' }}>📄 İkametgah Belgesi</div>
+                        <div style={{ fontSize: '10px', fontFamily: 'monospace', color: '#15803d' }}>
+                          {recipient.residenceBlobId.slice(0, 16)}...
+                        </div>
+                      </a>
+                    )}
 
-                {/* Approve Button */}
+                    {recipient.incomeBlobId && (
+                      <a
+                        href={getWalrusUrl(recipient.incomeBlobId)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{
+                          flex: 1,
+                          display: 'block',
+                          padding: '12px 16px',
+                          background: '#eff6ff',
+                          borderRadius: '8px',
+                          color: '#1e40af',
+                          textDecoration: 'none',
+                          fontSize: '13px',
+                          border: '1px solid #93c5fd',
+                        }}
+                      >
+                        <div style={{ fontWeight: '600', marginBottom: '4px' }}>💰 Gelir Belgesi</div>
+                        <div style={{ fontSize: '10px', fontFamily: 'monospace', color: '#1d4ed8' }}>
+                          {recipient.incomeBlobId.slice(0, 16)}...
+                        </div>
+                      </a>
+                    )}
+                  </div>
+                </div>
+
                 <button
                   onClick={() => handleVerify(recipient.id, recipient.name)}
                   disabled={verifying === recipient.id}
@@ -467,7 +475,7 @@ export function RecipientVerification() {
                     opacity: verifying === recipient.id ? 0.7 : 1,
                   }}
                 >
-                  {verifying === recipient.id ? 'Onaylanıyor...' : 'Onayla'}
+                  {verifying === recipient.id ? 'Onaylanıyor...' : '✅ Onayla'}
                 </button>
               </div>
             </div>

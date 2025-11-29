@@ -1,19 +1,29 @@
 module aidchain::aidchain {
-    use std::string;
+    use std::string::{Self, String};
     use std::vector;
-    use std::option;
+    use std::option::{Self, Option};
 
-    use sui::object;
+    use sui::object::{Self, UID, ID};
     use sui::tx_context::{Self, TxContext};
     use sui::transfer;
     use sui::event;
-    use sui::coin;
+    use sui::coin::{Self, Coin};
     use sui::sui::SUI;
 
+    // ============================================
+    // CONSTANTS
+    // ============================================
+    
     /// Yardım paketinin durumları
     const STATUS_CREATED: u8 = 0;
     const STATUS_IN_TRANSIT: u8 = 1;
     const STATUS_DELIVERED: u8 = 2;
+
+    /// Proposal durumları
+    const PROPOSAL_PENDING: u8 = 0;
+    const PROPOSAL_APPROVED: u8 = 1;
+    const PROPOSAL_REJECTED: u8 = 2;
+    const PROPOSAL_EXPIRED: u8 = 3;
 
     /// Hata kodları
     const E_NOT_AUTHORIZED: u64 = 1;
@@ -26,460 +36,791 @@ module aidchain::aidchain {
     const E_NO_LOCKED_DONATION: u64 = 8;
     const E_INVALID_AMOUNT: u64 = 9;
     const E_NOT_APPROVED: u64 = 10;
+    const E_NOT_VERIFIER: u64 = 11;
+    const E_ALREADY_VERIFIER: u64 = 12;
+    // V8: E_VERIFIER_NOT_FOUND ve E_CANNOT_REMOVE_ADMIN kaldırıldı (verifier çıkarma yok)
+    const E_ALREADY_VOTED: u64 = 15;
+    const E_PROPOSAL_EXPIRED: u64 = 16;
+    const E_PROPOSAL_NOT_PENDING: u64 = 17;
+    const E_QUORUM_NOT_MET: u64 = 18;
+    const E_ALREADY_EXECUTED: u64 = 19;
+    const E_NOT_ENOUGH_APPROVALS: u64 = 20;
+    const E_RECIPIENT_NOT_VERIFIED: u64 = 21;
+    const E_PROPOSAL_EXISTS: u64 = 22;
+    const E_ADMIN_CANNOT_REGISTER: u64 = 23;
 
-    /// Minimum teslim süresi (epoch cinsinden) - TEST için 0 (Production'da 1 yapılabilir)
+    /// Minimum teslim süresi (epoch cinsinden)
     const MIN_DELIVERY_EPOCHS: u64 = 0;
 
-    /// Tüm yardım paketlerinin ID'lerini tutan global registry.
+    /// DAO varsayılan ayarları
+    const DEFAULT_VOTING_PERIOD: u64 = 10;     // 10 epoch (~10 dakika testnet)
+    const DEFAULT_QUORUM_PERCENT: u64 = 50;    // %50 katılım
+    const DEFAULT_APPROVAL_PERCENT: u64 = 60;  // %60 onay
+
+    // ============================================
+    // V6: DAO OYLAMA SİSTEMİ
+    // ============================================
+
+    /// DAO Konfigürasyonu
+    public struct DAOConfig has store, copy, drop {
+        voting_period_epochs: u64,
+        quorum_percent: u64,
+        approval_percent: u64,
+    }
+
+    /// Tüm yardım paketlerinin ID'lerini tutan global registry
     public struct AidRegistry has key {
-        id: object::UID,
-        /// Registry'yi ilk oluşturan admin adresi (STK / organizasyon cüzdanı)
+        id: UID,
         admin: address,
-        /// Tüm paketlerin ID'leri
-        packages: vector<object::ID>,
-        /// Kayıtlı recipient profil ID'leri
-        recipient_profiles: vector<object::ID>,
+        verifiers: vector<address>,
+        packages: vector<ID>,
+        recipient_profiles: vector<ID>,
+        proposals: vector<ID>,
+        dao_config: DAOConfig,
+        total_donations: u64,
+        total_delivered: u64,
+    }
+
+    /// Alıcı doğrulama önerisi (Proposal)
+    public struct VerificationProposal has key {
+        id: UID,
+        profile_id: ID,
+        profile_owner: address,
+        proposer: address,
+        votes_for: vector<address>,
+        votes_against: vector<address>,
+        created_at_epoch: u64,
+        expires_at_epoch: u64,
+        status: u8,
+        executed: bool,
+        execution_epoch: Option<u64>,
     }
 
     /// Yardım almaya ihtiyacı olan kişinin profili
     public struct RecipientProfile has key {
-        id: object::UID,
-        /// Recipient'in adresi
+        id: UID,
         recipient: address,
-        /// İsim/Tanım (örn: "Ahmet Yılmaz - Depremzede")
-        name: string::String,
-        /// Lokasyon
-        location: string::String,
-        /// İhtiyaç kategorisi (örn: "Gıda", "Barınma", "Sağlık")
-        need_category: string::String,
-        /// Doğrulama durumu (STK tarafından onaylanmış mı?)
+        name: String,
+        location: String,
         is_verified: bool,
-        /// Kayıt tarihi
+        verified_by: Option<address>,
         registered_at_epoch: u64,
-        /// Alınan toplam bağış sayısı
+        verified_at_epoch: Option<u64>,
         received_packages_count: u64,
-        /// KYC: TC Kimlik numarasının SHA-256 hash'i (gizlilik için)
-        tc_hash: string::String,
-        /// KYC: Telefon numarası (doğrulama için)
-        phone: string::String,
-        /// Walrus: Hasar/kanıt fotoğrafının blob ID'si
-        evidence_blob_id: string::String,
-        /// Aile büyüklüğü (kişi sayısı)
+        tc_hash: String,
+        phone: String,
+        residence_blob_id: String,     // İkametgah belgesi (Walrus)
+        income_blob_id: String,        // Gelir belgesi (Walrus)
         family_size: u64,
-        /// Detaylı açıklama (hasar durumu vb.)
-        description: string::String,
+        description: String,
+        proposal_id: Option<ID>,
+        votes_received: u64,
     }
 
-    /// Tekil bir yardım paketi
-    /// Walrus entegrasyonu:
-    /// - proof_url: Teslim anındaki fotoğraf / imzalı form gibi kanıtın Walrus URL'si
-    /// Escrow: Bağış bu pakette kilitli kalır, teslim edilince coordinatora aktarılır
+    /// Yardım paketi
     public struct AidPackage has key {
-        id: object::UID,
-        /// Bağışçının adresi
+        id: UID,
         donor: address,
-        /// Paketi yöneten STK / organizasyon adresi
         coordinator: address,
-        /// Nihai alıcının adresi (PoC'de opsiyonel)
-        recipient: option::Option<address>,
-        /// Hangi bölge için (örn: "Hatay/Antakya", "İstanbul/Üsküdar")
-        location: string::String,
-        /// Kısa açıklama (örn: "Gıda Paketi", "Çocuk bezi + mama")
-        description: string::String,
-        /// Durum (created / in_transit / delivered)
+        recipient: Option<address>,
+        location: String,
+        description: String,
         status: u8,
-        /// Walrus üzerinde saklanan teslim kanıtının URL'si
-        proof_url: string::String,
-        /// Oluşturulduğu epoch
+        proof_url: String,
         created_at_epoch: u64,
-        /// Son güncelleme epoch
         updated_at_epoch: u64,
-        /// Bağış tutarı (Mist cinsinden)
         donation_amount: u64,
-        /// ESCROW: Bağış pakette kilitli - sadece teslimde serbest bırakılır
-        locked_donation: option::Option<coin::Coin<SUI>>,
-        /// Teslim notu (coordinator ekler)
-        delivery_note: option::Option<string::String>,
-        /// Recipient onayı (çoklu imza için)
+        locked_donation: Option<Coin<SUI>>,
+        delivery_note: Option<String>,
         recipient_approved: bool,
-        /// Coordinator onayı (çoklu imza için)
         coordinator_approved: bool,
     }
 
-    /// Statü değişim event'i – zincirde izleme için
+    // ============================================
+    // EVENTS
+    // ============================================
+
     public struct AidStatusChanged has copy, drop {
-        package_id: object::ID,
+        package_id: ID,
         old_status: u8,
         new_status: u8,
         actor: address,
     }
 
-    /// Gelişmiş teslim event'i - tüm detayları içerir
     public struct DeliveryCompleted has copy, drop {
-        package_id: object::ID,
+        package_id: ID,
         coordinator: address,
         recipient: address,
         donation_amount: u64,
-        proof_url: string::String,
-        delivery_note: option::Option<string::String>,
+        proof_url: String,
+        delivery_note: Option<String>,
         epoch: u64,
     }
 
-    /// Onay event'i - çoklu imza tracking
     public struct ApprovalReceived has copy, drop {
-        package_id: object::ID,
+        package_id: ID,
         approver: address,
-        approver_type: string::String, // "coordinator" veya "recipient"
+        approver_type: String,
         epoch: u64,
     }
 
-    /// Refund event'i
     public struct RefundProcessed has copy, drop {
-        package_id: object::ID,
+        package_id: ID,
         donor: address,
         amount: u64,
-        reason: string::String,
+        reason: String,
         epoch: u64,
     }
 
-    /// İlk registry'yi oluşturmak için entry fonksiyon.
-    /// Bunu deploy'dan sonra sadece 1 kere çağırırsın.
+    public struct VerifierAdded has copy, drop {
+        registry_id: ID,
+        verifier: address,
+        added_by: address,
+        epoch: u64,
+    }
+
+    // V8: VerifierRemoved kaldırıldı - bir kez eklenen verifier çıkarılamaz
+
+    public struct RecipientVerified has copy, drop {
+        profile_id: ID,
+        recipient: address,
+        verified_by: address,
+        epoch: u64,
+    }
+
+    // DAO Events
+    public struct ProposalCreated has copy, drop {
+        proposal_id: ID,
+        profile_id: ID,
+        proposer: address,
+        expires_at_epoch: u64,
+        epoch: u64,
+    }
+
+    public struct VoteCast has copy, drop {
+        proposal_id: ID,
+        voter: address,
+        vote_for: bool,
+        votes_for_count: u64,
+        votes_against_count: u64,
+        epoch: u64,
+    }
+
+    public struct ProposalExecuted has copy, drop {
+        proposal_id: ID,
+        profile_id: ID,
+        approved: bool,
+        final_votes_for: u64,
+        final_votes_against: u64,
+        epoch: u64,
+    }
+
+    public struct DAOConfigUpdated has copy, drop {
+        registry_id: ID,
+        voting_period: u64,
+        quorum_percent: u64,
+        approval_percent: u64,
+        updated_by: address,
+        epoch: u64,
+    }
+
+    // ============================================
+    // ADMIN FONKSİYONLARI
+    // ============================================
+
+    /// İlk registry'yi oluşturur
     public entry fun init_registry(ctx: &mut TxContext) {
         let sender = tx_context::sender(ctx);
+
+        let mut verifiers = vector::empty<address>();
+        vector::push_back(&mut verifiers, sender);
+
+        let dao_config = DAOConfig {
+            voting_period_epochs: DEFAULT_VOTING_PERIOD,
+            quorum_percent: DEFAULT_QUORUM_PERCENT,
+            approval_percent: DEFAULT_APPROVAL_PERCENT,
+        };
 
         let registry = AidRegistry {
             id: object::new(ctx),
             admin: sender,
-            packages: vector::empty<object::ID>(),
-            recipient_profiles: vector::empty<object::ID>(),
+            verifiers,
+            packages: vector::empty<ID>(),
+            recipient_profiles: vector::empty<ID>(),
+            proposals: vector::empty<ID>(),
+            dao_config,
+            total_donations: 0,
+            total_delivered: 0,
         };
 
-        // Tüm ağ tarafından erişilebilir shared object
         transfer::share_object(registry);
     }
 
-    /// İleride admin'e özel fonksiyon yazarsan kullanırsın (şu an kullanılmıyor)
+    /// DAO config güncelle (sadece admin)
+    public entry fun update_dao_config(
+        registry: &mut AidRegistry,
+        voting_period: u64,
+        quorum_percent: u64,
+        approval_percent: u64,
+        ctx: &mut TxContext
+    ) {
+        let sender = tx_context::sender(ctx);
+        assert_admin(registry, sender);
+
+        registry.dao_config = DAOConfig {
+            voting_period_epochs: voting_period,
+            quorum_percent,
+            approval_percent,
+        };
+
+        event::emit(DAOConfigUpdated {
+            registry_id: object::id(registry),
+            voting_period,
+            quorum_percent,
+            approval_percent,
+            updated_by: sender,
+            epoch: tx_context::epoch(ctx),
+        });
+    }
+
     fun assert_admin(registry: &AidRegistry, caller: address) {
         assert!(registry.admin == caller, E_NOT_AUTHORIZED);
     }
 
-    /// Yardıma ihtiyacı olan kişi kendini kaydettirir (KYC + Walrus kanıt ile)
-    public entry fun register_recipient(
+    fun assert_verifier(registry: &AidRegistry, caller: address) {
+        let is_admin = registry.admin == caller;
+        let is_in_list = vector::contains(&registry.verifiers, &caller);
+        assert!(is_admin || is_in_list, E_NOT_VERIFIER);
+    }
+
+    public fun is_verifier(registry: &AidRegistry, addr: address): bool {
+        registry.admin == addr || vector::contains(&registry.verifiers, &addr)
+    }
+
+    public fun get_verifiers(registry: &AidRegistry): vector<address> {
+        registry.verifiers
+    }
+
+    public fun verifier_count(registry: &AidRegistry): u64 {
+        vector::length(&registry.verifiers)
+    }
+
+    public fun get_admin(registry: &AidRegistry): address {
+        registry.admin
+    }
+
+    public fun get_dao_config(registry: &AidRegistry): DAOConfig {
+        registry.dao_config
+    }
+
+    /// Yeni verifier ekle (sadece admin)
+    public entry fun add_verifier(
         registry: &mut AidRegistry,
-        name: string::String,
-        location: string::String,
-        need_category: string::String,
-        tc_hash: string::String,
-        phone: string::String,
-        evidence_blob_id: string::String,
-        family_size: u64,
-        description: string::String,
+        new_verifier: address,
         ctx: &mut TxContext
     ) {
         let sender = tx_context::sender(ctx);
-        let now = tx_context::epoch(ctx);
+        assert_admin(registry, sender);
+        
+        let already_exists = vector::contains(&registry.verifiers, &new_verifier);
+        assert!(!already_exists, E_ALREADY_VERIFIER);
+        
+        vector::push_back(&mut registry.verifiers, new_verifier);
+
+        event::emit(VerifierAdded {
+            registry_id: object::id(registry),
+            verifier: new_verifier,
+            added_by: sender,
+            epoch: tx_context::epoch(ctx),
+        });
+    }
+
+    // V8: remove_verifier kaldırıldı - Bir kez eklenen verifier blockchain'den çıkarılamaz
+    // Bu güvenlik açısından önemli: Admin bile keyfi olarak DAO üyelerini çıkaramaz
+
+    // ============================================
+    // DAO OYLAMA FONKSİYONLARI
+    // ============================================
+
+    /// Alıcı doğrulama önerisi oluştur (herhangi bir verifier)
+    public entry fun create_verification_proposal(
+        registry: &mut AidRegistry,
+        profile: &mut RecipientProfile,
+        ctx: &mut TxContext
+    ) {
+        let sender = tx_context::sender(ctx);
+        assert_verifier(registry, sender);
+        
+        // Zaten doğrulanmış mı?
+        assert!(!profile.is_verified, E_ALREADY_DELIVERED);
+        
+        // Zaten aktif proposal var mı?
+        assert!(option::is_none(&profile.proposal_id), E_PROPOSAL_EXISTS);
+
+        let current_epoch = tx_context::epoch(ctx);
+        let expires_at = current_epoch + registry.dao_config.voting_period_epochs;
+
+        // Proposer otomatik olarak lehte oy verir
+        let mut votes_for = vector::empty<address>();
+        vector::push_back(&mut votes_for, sender);
+
+        let proposal = VerificationProposal {
+            id: object::new(ctx),
+            profile_id: object::id(profile),
+            profile_owner: profile.recipient,
+            proposer: sender,
+            votes_for,
+            votes_against: vector::empty<address>(),
+            created_at_epoch: current_epoch,
+            expires_at_epoch: expires_at,
+            status: PROPOSAL_PENDING,
+            executed: false,
+            execution_epoch: option::none(),
+        };
+
+        let proposal_id = object::id(&proposal);
+        
+        // Profile'a proposal ID'yi kaydet
+        profile.proposal_id = option::some(proposal_id);
+        
+        // Registry'ye proposal ekle
+        vector::push_back(&mut registry.proposals, proposal_id);
+
+        event::emit(ProposalCreated {
+            proposal_id,
+            profile_id: object::id(profile),
+            proposer: sender,
+            expires_at_epoch: expires_at,
+            epoch: current_epoch,
+        });
+
+        transfer::share_object(proposal);
+    }
+
+    /// Öneri için oy ver
+    public entry fun vote_on_proposal(
+        registry: &AidRegistry,
+        proposal: &mut VerificationProposal,
+        vote_for: bool,
+        ctx: &mut TxContext
+    ) {
+        let sender = tx_context::sender(ctx);
+        let current_epoch = tx_context::epoch(ctx);
+        
+        // Verifier kontrolü
+        assert_verifier(registry, sender);
+        
+        // Proposal durumu kontrolü
+        assert!(proposal.status == PROPOSAL_PENDING, E_PROPOSAL_NOT_PENDING);
+        
+        // Süre kontrolü
+        assert!(current_epoch <= proposal.expires_at_epoch, E_PROPOSAL_EXPIRED);
+        
+        // Daha önce oy kullanmış mı?
+        let already_voted_for = vector::contains(&proposal.votes_for, &sender);
+        let already_voted_against = vector::contains(&proposal.votes_against, &sender);
+        assert!(!already_voted_for && !already_voted_against, E_ALREADY_VOTED);
+
+        // Oy ekle
+        if (vote_for) {
+            vector::push_back(&mut proposal.votes_for, sender);
+        } else {
+            vector::push_back(&mut proposal.votes_against, sender);
+        };
+
+        event::emit(VoteCast {
+            proposal_id: object::id(proposal),
+            voter: sender,
+            vote_for,
+            votes_for_count: vector::length(&proposal.votes_for),
+            votes_against_count: vector::length(&proposal.votes_against),
+            epoch: current_epoch,
+        });
+    }
+
+    /// Öneriyi yürüt (quorum ve çoğunluk sağlandıysa)
+    public entry fun execute_proposal(
+        registry: &mut AidRegistry,
+        proposal: &mut VerificationProposal,
+        profile: &mut RecipientProfile,
+        ctx: &mut TxContext
+    ) {
+        let current_epoch = tx_context::epoch(ctx);
+        
+        // Zaten yürütülmüş mü?
+        assert!(!proposal.executed, E_ALREADY_EXECUTED);
+        
+        // Profile ID eşleşmesi
+        assert!(object::id(profile) == proposal.profile_id, E_INVALID_RECIPIENT);
+
+        let total_verifiers = vector::length(&registry.verifiers);
+        let votes_for = vector::length(&proposal.votes_for);
+        let votes_against = vector::length(&proposal.votes_against);
+        let total_votes = votes_for + votes_against;
+
+        // Quorum kontrolü (en az 1 oy gerekli)
+        let quorum_threshold = if (total_verifiers == 0) { 1 } else {
+            let threshold = (total_verifiers * registry.dao_config.quorum_percent) / 100;
+            if (threshold == 0) { 1 } else { threshold }
+        };
+        let quorum_met = total_votes >= quorum_threshold;
+
+        // Süre dolmuş mu?
+        let expired = current_epoch > proposal.expires_at_epoch;
+
+        // Karar ver
+        let approved: bool;
+        
+        if (expired && !quorum_met) {
+            // Süre doldu ve quorum sağlanamadı
+            proposal.status = PROPOSAL_EXPIRED;
+            approved = false;
+        } else if (quorum_met) {
+            // Quorum sağlandı, çoğunluğa bak
+            let approval_threshold = if (total_votes == 0) { 1 } else {
+                let threshold = (total_votes * registry.dao_config.approval_percent) / 100;
+                if (threshold == 0) { 1 } else { threshold }
+            };
+            
+            if (votes_for >= approval_threshold) {
+                proposal.status = PROPOSAL_APPROVED;
+                approved = true;
+                
+                // Profile'ı doğrula
+                profile.is_verified = true;
+                profile.verified_at_epoch = option::some(current_epoch);
+                profile.votes_received = votes_for;
+                profile.verified_by = option::some(proposal.proposer);
+            } else {
+                proposal.status = PROPOSAL_REJECTED;
+                approved = false;
+            }
+        } else {
+            // Henüz quorum yok ve süre dolmadı
+            assert!(false, E_QUORUM_NOT_MET);
+            approved = false;
+        };
+
+        proposal.executed = true;
+        proposal.execution_epoch = option::some(current_epoch);
+        
+        // Profile'dan proposal referansını kaldır
+        profile.proposal_id = option::none();
+
+        event::emit(ProposalExecuted {
+            proposal_id: object::id(proposal),
+            profile_id: object::id(profile),
+            approved,
+            final_votes_for: votes_for,
+            final_votes_against: votes_against,
+            epoch: current_epoch,
+        });
+
+        if (approved) {
+            event::emit(RecipientVerified {
+                profile_id: object::id(profile),
+                recipient: profile.recipient,
+                verified_by: proposal.proposer,
+                epoch: current_epoch,
+            });
+        }
+    }
+
+    /// Proposal durumunu kontrol et
+    public fun get_proposal_status(proposal: &VerificationProposal): (u8, u64, u64, bool) {
+        (
+            proposal.status,
+            vector::length(&proposal.votes_for),
+            vector::length(&proposal.votes_against),
+            proposal.executed
+        )
+    }
+
+    /// Quorum kontrolü
+    public fun check_quorum(registry: &AidRegistry, proposal: &VerificationProposal): bool {
+        let total_verifiers = vector::length(&registry.verifiers);
+        let total_votes = vector::length(&proposal.votes_for) + vector::length(&proposal.votes_against);
+        let quorum_threshold = (total_verifiers * registry.dao_config.quorum_percent) / 100;
+        total_votes >= quorum_threshold
+    }
+
+    // ============================================
+    // ACIL DURUM: Admin direkt onay (bypass DAO)
+    // ============================================
+
+    public entry fun admin_verify_recipient(
+        registry: &mut AidRegistry,
+        profile: &mut RecipientProfile,
+        ctx: &mut TxContext
+    ) {
+        let sender = tx_context::sender(ctx);
+        assert_admin(registry, sender);
+
+        profile.is_verified = true;
+        profile.verified_by = option::some(sender);
+        profile.verified_at_epoch = option::some(tx_context::epoch(ctx));
+
+        event::emit(RecipientVerified {
+            profile_id: object::id(profile),
+            recipient: profile.recipient,
+            verified_by: sender,
+            epoch: tx_context::epoch(ctx),
+        });
+    }
+
+    // ============================================
+    // RECIPIENT KAYIT FONKSİYONLARI
+    // ============================================
+
+    public entry fun register_recipient(
+        registry: &mut AidRegistry,
+        name: vector<u8>,
+        location: vector<u8>,
+        tc_hash: vector<u8>,
+        phone: vector<u8>,
+        residence_blob_id: vector<u8>,
+        income_blob_id: vector<u8>,
+        family_size: u64,
+        description: vector<u8>,
+        ctx: &mut TxContext
+    ) {
+        let sender = tx_context::sender(ctx);
+        let current_epoch = tx_context::epoch(ctx);
+
+        // Admin veya verifier başvuru yapamaz
+        let is_admin_or_verifier = is_verifier(registry, sender);
+        assert!(!is_admin_or_verifier, E_ADMIN_CANNOT_REGISTER);
 
         let profile = RecipientProfile {
             id: object::new(ctx),
             recipient: sender,
-            name,
-            location,
-            need_category,
-            is_verified: false, // STK onaylayana kadar false
-            registered_at_epoch: now,
+            name: string::utf8(name),
+            location: string::utf8(location),
+            is_verified: false,
+            verified_by: option::none(),
+            registered_at_epoch: current_epoch,
+            verified_at_epoch: option::none(),
             received_packages_count: 0,
-            tc_hash,
-            phone,
-            evidence_blob_id,
+            tc_hash: string::utf8(tc_hash),
+            phone: string::utf8(phone),
+            residence_blob_id: string::utf8(residence_blob_id),
+            income_blob_id: string::utf8(income_blob_id),
             family_size,
-            description,
+            description: string::utf8(description),
+            proposal_id: option::none(),
+            votes_received: 0,
         };
 
         let profile_id = object::id(&profile);
         vector::push_back(&mut registry.recipient_profiles, profile_id);
 
-        // Profile'ı shared yap ki herkes görebilsin
-        transfer::share_object(profile);
+        transfer::transfer(profile, sender);
     }
 
-    /// STK recipient'i doğrular (onaylar)
-    public entry fun verify_recipient(
-        registry: &AidRegistry,
-        profile: &mut RecipientProfile,
+    // ============================================
+    // YARDIM PAKETİ FONKSİYONLARI
+    // ============================================
+
+    public entry fun create_aid_package(
+        registry: &mut AidRegistry,
+        location: vector<u8>,
+        description: vector<u8>,
+        donation: Coin<SUI>,
         ctx: &mut TxContext
     ) {
         let sender = tx_context::sender(ctx);
-        
-        // Sadece admin doğrulayabilir
-        assert_admin(registry, sender);
-        
-        profile.is_verified = true;
-    }
+        let current_epoch = tx_context::epoch(ctx);
+        let donation_amount = coin::value(&donation);
 
-    /// Yeni yardım paketi + gerçek SUI bağışı
-    /// - donation: Coin<SUI> on-chain bağış - PAKETTE KİLİTLİ KALIR
-    /// - Sadece teslim edildiğinde coordinator'a aktarılır
-    /// - recipient: Kayıtlı recipient adresi (zorunlu!)
-    public entry fun donate(
-        registry: &mut AidRegistry,
-        description: string::String,
-        location: string::String,
-        coordinator: address,
-        recipient: address, // Yeni: Recipient zorunlu!
-        donation: coin::Coin<SUI>,
-        ctx: &mut TxContext
-    ) {
-        let donor = tx_context::sender(ctx);
-        let now = tx_context::epoch(ctx);
-        let amount = coin::value(&donation);
+        assert!(donation_amount > 0, E_INVALID_AMOUNT);
 
-        let package = AidPackage {
+        let aid_package = AidPackage {
             id: object::new(ctx),
-            donor,
-            coordinator,
-            recipient: option::some(recipient), // Artık zorunlu!
-            location,
-            description,
+            donor: sender,
+            coordinator: sender,
+            recipient: option::none(),
+            location: string::utf8(location),
+            description: string::utf8(description),
             status: STATUS_CREATED,
-            proof_url: string::utf8(b""), // Teslim kanıtı henüz yok
-            created_at_epoch: now,
-            updated_at_epoch: now,
-            donation_amount: amount,
-            locked_donation: option::some(donation), // ESCROW: Bağış pakette kilitli
-            delivery_note: option::none<string::String>(),
+            proof_url: string::utf8(b""),
+            created_at_epoch: current_epoch,
+            updated_at_epoch: current_epoch,
+            donation_amount,
+            locked_donation: option::some(donation),
+            delivery_note: option::none(),
             recipient_approved: false,
             coordinator_approved: false,
         };
 
-        let package_id = object::id(&package);
+        let pkg_id = object::id(&aid_package);
+        vector::push_back(&mut registry.packages, pkg_id);
+        registry.total_donations = registry.total_donations + donation_amount;
 
-        // Registry'ye paketin ID'sini ekle
-        vector::push_back(&mut registry.packages, package_id);
-
-        // Paketi shared yap ki durum güncellenebilsin
-        // Bağış pakette kaldığı için güvende
-        transfer::share_object(package);
+        transfer::share_object(aid_package);
     }
 
-    /// Statü güncellemeden önce basit kontrol:
-    /// Şimdilik: sadece coordinator statüyü değiştirebilsin.
-    fun assert_can_update(package: &AidPackage, actor: address) {
-        assert!(package.coordinator == actor, 2);
-    }
-
-    public entry fun mark_in_transit(
-        package: &mut AidPackage,
+    /// Paketi doğrulanmış alıcıya ata
+    public entry fun assign_recipient(
+        aid_package: &mut AidPackage,
+        profile: &RecipientProfile,
         ctx: &mut TxContext
     ) {
         let sender = tx_context::sender(ctx);
-        assert_can_update(package, sender);
+        
+        assert!(aid_package.donor == sender || aid_package.coordinator == sender, E_NOT_AUTHORIZED);
+        assert!(aid_package.status == STATUS_CREATED, E_INVALID_STATUS);
+        assert!(profile.is_verified, E_RECIPIENT_NOT_VERIFIED);
 
-        let old = package.status;
-        package.status = STATUS_IN_TRANSIT;
-        package.updated_at_epoch = tx_context::epoch(ctx);
-
-        let package_id = object::id(package);
+        aid_package.recipient = option::some(profile.recipient);
+        aid_package.status = STATUS_IN_TRANSIT;
+        aid_package.updated_at_epoch = tx_context::epoch(ctx);
 
         event::emit(AidStatusChanged {
-            package_id,
-            old_status: old,
+            package_id: object::id(aid_package),
+            old_status: STATUS_CREATED,
             new_status: STATUS_IN_TRANSIT,
             actor: sender,
         });
     }
 
-    /// Coordinator onayı - çoklu imza sisteminin 1. adımı
-    public entry fun approve_as_coordinator(
-        package: &mut AidPackage,
-        delivery_note: string::String,
+    /// Teslim edildi olarak işaretle
+    public entry fun mark_delivered(
+        aid_package: &mut AidPackage,
+        delivery_note: vector<u8>,
         ctx: &mut TxContext
     ) {
         let sender = tx_context::sender(ctx);
-        assert!(package.coordinator == sender, E_NOT_AUTHORIZED);
-        assert!(package.status != STATUS_DELIVERED, E_ALREADY_DELIVERED);
+        let current_epoch = tx_context::epoch(ctx);
+        
+        let is_recipient = option::is_some(&aid_package.recipient) && 
+                          *option::borrow(&aid_package.recipient) == sender;
+        
+        assert!(is_recipient, E_NOT_AUTHORIZED);
+        assert!(aid_package.status == STATUS_IN_TRANSIT, E_INVALID_STATUS);
 
-        package.coordinator_approved = true;
-        package.delivery_note = option::some(delivery_note);
+        let old_status = aid_package.status;
+        aid_package.status = STATUS_DELIVERED;
+        aid_package.updated_at_epoch = current_epoch;
+        
+        if (vector::length(&delivery_note) > 0) {
+            aid_package.delivery_note = option::some(string::utf8(delivery_note));
+        };
 
-        let package_id = object::id(package);
+        aid_package.recipient_approved = true;
+
+        event::emit(AidStatusChanged {
+            package_id: object::id(aid_package),
+            old_status,
+            new_status: STATUS_DELIVERED,
+            actor: sender,
+        });
+    }
+
+    /// Koordinatör onayı
+    public entry fun coordinator_approve(
+        aid_package: &mut AidPackage,
+        ctx: &mut TxContext
+    ) {
+        let sender = tx_context::sender(ctx);
+        
+        assert!(aid_package.coordinator == sender, E_NOT_AUTHORIZED);
+        assert!(aid_package.status == STATUS_DELIVERED, E_INVALID_STATUS);
+
+        aid_package.coordinator_approved = true;
+
         event::emit(ApprovalReceived {
-            package_id,
+            package_id: object::id(aid_package),
             approver: sender,
             approver_type: string::utf8(b"coordinator"),
             epoch: tx_context::epoch(ctx),
         });
     }
 
-    /// Recipient onayı - çoklu imza sisteminin 2. adımı
-    /// Recipient onayı - sadece pakette belirlenmiş recipient onaylayabilir
-    public entry fun approve_as_recipient(
-        package: &mut AidPackage,
+    /// Fonları serbest bırak
+    public entry fun release_funds(
+        registry: &mut AidRegistry,
+        aid_package: &mut AidPackage,
         ctx: &mut TxContext
     ) {
-        let sender = tx_context::sender(ctx);
-        
-        // Recipient mutlaka belirlenmiş olmalı (artık ilk gelen recipient olamaz!)
-        assert!(option::is_some(&package.recipient), E_INVALID_RECIPIENT);
+        assert!(aid_package.status == STATUS_DELIVERED, E_INVALID_STATUS);
+        assert!(aid_package.recipient_approved && aid_package.coordinator_approved, E_NOT_APPROVED);
+        assert!(option::is_some(&aid_package.locked_donation), E_NO_LOCKED_DONATION);
 
-        // Sadece belirlenen recipient onaylayabilir
-        let recipient_addr = *option::borrow(&package.recipient);
-        assert!(recipient_addr == sender, E_INVALID_RECIPIENT);
-        assert!(package.status != STATUS_DELIVERED, E_ALREADY_DELIVERED);
+        let recipient = *option::borrow(&aid_package.recipient);
+        let donation = option::extract(&mut aid_package.locked_donation);
+        let amount = coin::value(&donation);
 
-        package.recipient_approved = true;
+        registry.total_delivered = registry.total_delivered + amount;
 
-        let package_id = object::id(package);
-        event::emit(ApprovalReceived {
-            package_id,
-            approver: sender,
-            approver_type: string::utf8(b"recipient"),
-            epoch: tx_context::epoch(ctx),
-        });
-    }
-
-    /// GELİŞMİŞ Teslim fonksiyonu - SADECE RECİPİENT TESLİM EDEBİLİR
-    /// Yeni tasarım:
-    /// 1. ✅ Sadece recipient teslim edebilir (coordinator değil!)
-    /// 2. ✅ Proof URL zorunluluğu
-    /// 3. ✅ Minimum süre kontrolü
-    /// 4. ✅ Çoklu imza (hem coordinator hem recipient onaylı olmalı)
-    /// 5. ✅ Bağış miktarı doğrulama
-    /// 6. ✅ Detaylı event
-    /// 7. ✅ Delivery note desteği
-    public entry fun mark_delivered(
-        package: &mut AidPackage,
-        proof_url: string::String,
-        ctx: &mut TxContext
-    ) {
-        let sender = tx_context::sender(ctx);
-        let now = tx_context::epoch(ctx);
-
-        // 1. Recipient doğrulama - SADECE RECİPİENT TESLİM EDEBİLİR!
-        assert!(option::is_some(&package.recipient), E_INVALID_RECIPIENT);
-        let recipient_addr = *option::borrow(&package.recipient);
-        assert!(recipient_addr == sender, E_INVALID_RECIPIENT);
-
-        // 2. Proof URL zorunluluğu
-        assert!(string::length(&proof_url) > 0, E_EMPTY_PROOF_URL);
-
-        // 3. Paket zaten teslim edilmemiş olmalı
-        assert!(package.status != STATUS_DELIVERED, E_ALREADY_DELIVERED);
-
-        // 4. Minimum süre kontrolü (1 epoch = ~24 saat)
-        let elapsed = now - package.created_at_epoch;
-        assert!(elapsed >= MIN_DELIVERY_EPOCHS, E_TOO_EARLY_DELIVERY);
-
-        // 5. Çoklu imza kontrolü - HEM coordinator HEM recipient onaylamış olmalı
-        assert!(package.coordinator_approved, E_NOT_APPROVED);
-        assert!(package.recipient_approved, E_NOT_APPROVED);
-
-        // 6. Bağış miktarı doğrulama
-        assert!(option::is_some(&package.locked_donation), E_NO_LOCKED_DONATION);
-        let donation_value = coin::value(option::borrow(&package.locked_donation));
-        assert!(donation_value == package.donation_amount, E_INVALID_AMOUNT);
-
-        // Status güncelle
-        let old = package.status;
-        package.status = STATUS_DELIVERED;
-        package.updated_at_epoch = now;
-        package.proof_url = proof_url;
-
-        // ESCROW RELEASE: Bağış teslimde coordinator'a aktarılır
-        let donation = option::extract(&mut package.locked_donation);
-        transfer::public_transfer(donation, package.coordinator);
-
-        let package_id = object::id(package);
-
-        // Detaylı delivery event
         event::emit(DeliveryCompleted {
-            package_id,
-            coordinator: package.coordinator,
-            recipient: recipient_addr,
-            donation_amount: package.donation_amount,
-            proof_url: package.proof_url,
-            delivery_note: package.delivery_note,
-            epoch: now,
+            package_id: object::id(aid_package),
+            coordinator: aid_package.coordinator,
+            recipient,
+            donation_amount: amount,
+            proof_url: aid_package.proof_url,
+            delivery_note: aid_package.delivery_note,
+            epoch: tx_context::epoch(ctx),
         });
 
-        // Eski status event (geriye uyumluluk)
-        event::emit(AidStatusChanged {
-            package_id,
-            old_status: old,
-            new_status: STATUS_DELIVERED,
-            actor: sender,
-        });
+        transfer::public_transfer(donation, recipient);
     }
 
-    /// GELİŞMİŞ İade fonksiyonu
-    /// Bağışçı iade talep edebilir (örn: teslim edilemedi, iptal edildi)
-    /// Sadece bağışçı çağırabilir ve paket henüz teslim edilmemişse
-    public entry fun refund_to_donor(
-        package: &mut AidPackage,
-        reason: string::String,
+    /// Bağışı iade et
+    public entry fun refund_donation(
+        registry: &mut AidRegistry,
+        aid_package: &mut AidPackage,
         ctx: &mut TxContext
     ) {
         let sender = tx_context::sender(ctx);
         
-        // Sadece bağışçı iade alabilir
-        assert!(package.donor == sender, E_NOT_DONOR);
-        
-        // Paket henüz teslim edilmemişse iade edilebilir
-        assert!(package.status != STATUS_DELIVERED, E_ALREADY_DELIVERED);
+        assert!(aid_package.donor == sender, E_NOT_DONOR);
+        assert!(aid_package.status != STATUS_DELIVERED, E_ALREADY_DELIVERED);
+        assert!(option::is_some(&aid_package.locked_donation), E_NO_LOCKED_DONATION);
 
-        // Bağış olmalı
-        assert!(option::is_some(&package.locked_donation), E_NO_LOCKED_DONATION);
+        let donation = option::extract(&mut aid_package.locked_donation);
+        let amount = coin::value(&donation);
 
-        let amount = package.donation_amount;
-        let package_id = object::id(package);
+        registry.total_donations = registry.total_donations - amount;
 
-        // ESCROW REFUND: Bağış bağışçıya iade edilir
-        let donation = option::extract(&mut package.locked_donation);
-        transfer::public_transfer(donation, package.donor);
-
-        // Refund event
         event::emit(RefundProcessed {
-            package_id,
-            donor: package.donor,
+            package_id: object::id(aid_package),
+            donor: sender,
             amount,
-            reason,
+            reason: string::utf8(b"donor_requested"),
             epoch: tx_context::epoch(ctx),
         });
+
+        transfer::public_transfer(donation, sender);
     }
 
-    /// VIEW FONKSIYONLARI - Frontend için bilgi okuma
-    
-    /// Paketin kilitli bağış durumunu kontrol et
-    public fun has_locked_donation(package: &AidPackage): bool {
-        option::is_some(&package.locked_donation)
-    }
+    // ============================================
+    // VIEW FONKSİYONLARI
+    // ============================================
 
-    /// Kilitli bağış miktarını al (varsa)
-    public fun get_locked_donation_amount(package: &AidPackage): u64 {
-        if (option::is_some(&package.locked_donation)) {
-            coin::value(option::borrow(&package.locked_donation))
-        } else {
-            0
-        }
-    }
-
-    /// Paket detaylarını al
-    public fun get_package_info(package: &AidPackage): (
-        address, // donor
-        address, // coordinator
-        u8,      // status
-        u64,     // donation_amount
-        bool,    // has_locked_donation
-        bool,    // recipient_approved
-        bool     // coordinator_approved
-    ) {
+    public fun get_registry_stats(registry: &AidRegistry): (u64, u64, u64, u64) {
         (
-            package.donor,
-            package.coordinator,
-            package.status,
-            package.donation_amount,
-            option::is_some(&package.locked_donation),
-            package.recipient_approved,
-            package.coordinator_approved
+            vector::length(&registry.packages),
+            vector::length(&registry.recipient_profiles),
+            registry.total_donations,
+            registry.total_delivered
         )
+    }
+
+    public fun get_profile_info(profile: &RecipientProfile): (address, bool, u64, u64) {
+        (
+            profile.recipient,
+            profile.is_verified,
+            profile.received_packages_count,
+            profile.votes_received
+        )
+    }
+
+    public fun get_package_info(pkg: &AidPackage): (u8, u64, bool, bool) {
+        (
+            pkg.status,
+            pkg.donation_amount,
+            pkg.recipient_approved,
+            pkg.coordinator_approved
+                                                                                        )
     }
 }

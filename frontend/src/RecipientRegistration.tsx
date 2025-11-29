@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useSignAndExecuteTransaction, useSuiClient } from '@mysten/dapp-kit';
+import { useSignAndExecuteTransaction, useSuiClient, useCurrentAccount } from '@mysten/dapp-kit';
 import { Transaction } from '@mysten/sui/transactions';
 import { 
   AIDCHAIN_PACKAGE_ID, 
@@ -11,20 +11,20 @@ import {
 export function RecipientRegistration() {
   const [name, setName] = useState('');
   const [location, setLocation] = useState('');
-  const [needCategory, setNeedCategory] = useState('Gıda');
   const [tcNo, setTcNo] = useState('');
   const [phone, setPhone] = useState('');
   const [familySize, setFamilySize] = useState('1');
   const [description, setDescription] = useState('');
-  const [evidenceFile, setEvidenceFile] = useState<File | null>(null);
+  const [residenceFile, setResidenceFile] = useState<File | null>(null);
+  const [incomeFile, setIncomeFile] = useState<File | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [uploadProgress, setUploadProgress] = useState('');
   const [message, setMessage] = useState('');
   
   const { mutate: signAndExecute } = useSignAndExecuteTransaction();
   const client = useSuiClient();
+  const currentAccount = useCurrentAccount();
 
-  // TC Kimlik hash fonksiyonu (SHA-256)
   const hashTC = async (tc: string): Promise<string> => {
     const encoder = new TextEncoder();
     const data = encoder.encode(tc);
@@ -33,9 +33,8 @@ export function RecipientRegistration() {
     return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
   };
 
-  // Walrus'a dosya yükleme
-  const uploadToWalrus = async (file: File): Promise<string> => {
-    setUploadProgress('Dosya Walrus\'a yükleniyor...');
+  const uploadToWalrus = async (file: File, label: string): Promise<string> => {
+    setUploadProgress(`${label} Walrus'a yükleniyor...`);
     
     try {
       const response = await fetch(`${WALRUS_PUBLISHER_URL}/v1/blobs`, {
@@ -44,25 +43,27 @@ export function RecipientRegistration() {
       });
 
       if (!response.ok) {
-        throw new Error('Walrus yükleme hatası');
+        throw new Error(`${label} yükleme hatası`);
       }
 
       const result = await response.json();
-      // Walrus response format: { newlyCreated: { blobId: "..." } } or { alreadyCertified: { blobId: "..." } }
       const blobId = result.newlyCreated?.blobObject?.blobId || result.alreadyCertified?.blobId || '';
       
-      setUploadProgress('Yükleme tamamlandı');
       return blobId;
     } catch (error) {
-      console.error('Walrus upload error:', error);
-      setUploadProgress('Yükleme başarısız');
-      return '';
+      console.error(`Walrus upload error (${label}):`, error);
+      throw error;
     }
   };
 
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     
+    if (!currentAccount) {
+      setMessage('Lütfen önce cüzdanınızı bağlayın');
+      return;
+    }
+
     if (!name || !location || !tcNo || !phone) {
       setMessage('Lütfen tüm zorunlu alanları doldurun');
       return;
@@ -78,23 +79,28 @@ export function RecipientRegistration() {
       return;
     }
 
+    if (!residenceFile) {
+      setMessage('İkametgah belgesi yüklemek zorunludur');
+      return;
+    }
+
+    if (!incomeFile) {
+      setMessage('Gelir belgesi yüklemek zorunludur');
+      return;
+    }
+
     setIsSubmitting(true);
     setMessage('');
 
     try {
-      // 1. TC Kimlik hash'le (gizlilik için)
-      setUploadProgress('TC Kimlik hash\'leniyor...');
+      setUploadProgress('TC Kimlik hashleniyor...');
       const tcHash = await hashTC(tcNo);
 
-      // 2. Kanıt fotoğrafını Walrus'a yükle (varsa)
-      let evidenceBlobId = '';
-      if (evidenceFile) {
-        evidenceBlobId = await uploadToWalrus(evidenceFile);
-      }
+      const residenceBlobId = await uploadToWalrus(residenceFile, 'İkametgah belgesi');
+      const incomeBlobId = await uploadToWalrus(incomeFile, 'Gelir belgesi');
 
-      setUploadProgress('Blockchain\'e kaydediliyor...');
+      setUploadProgress('Blockchain kaydediliyor...');
 
-      // 3. Smart contract'a kaydet
       const txb = new Transaction();
       
       txb.moveCall({
@@ -107,10 +113,10 @@ export function RecipientRegistration() {
           }),
           txb.pure.string(name),
           txb.pure.string(location),
-          txb.pure.string(needCategory),
           txb.pure.string(tcHash),
           txb.pure.string(phone),
-          txb.pure.string(evidenceBlobId),
+          txb.pure.string(residenceBlobId),
+          txb.pure.string(incomeBlobId),
           txb.pure.u64(parseInt(familySize) || 1),
           txb.pure.string(description),
         ],
@@ -127,22 +133,30 @@ export function RecipientRegistration() {
 
             if (status.effects?.status?.status === 'success') {
               setMessage('Kayıt başarılı! STK onayı bekleniyor...');
-              // Reset form
               setName('');
               setLocation('');
-              setNeedCategory('Gıda');
               setTcNo('');
               setPhone('');
               setFamilySize('1');
               setDescription('');
-              setEvidenceFile(null);
+              setResidenceFile(null);
+              setIncomeFile(null);
               setUploadProgress('');
             } else {
-              setMessage('Kayıt başarısız oldu');
+              const errorMsg = status.effects?.status?.error || 'Bilinmeyen hata';
+              if (errorMsg.includes('23') || errorMsg.includes('E_ADMIN_CANNOT_REGISTER')) {
+                setMessage('Admin/STK üyeleri yardım başvurusu yapamaz');
+              } else {
+                setMessage(`Kayıt başarısız: ${errorMsg}`);
+              }
             }
           },
           onError: (error) => {
-            setMessage(`Hata: ${error.message}`);
+            if (error.message.includes('23')) {
+              setMessage('Admin/STK üyeleri yardım başvurusu yapamaz');
+            } else {
+              setMessage(`Hata: ${error.message}`);
+            }
           },
         }
       );
@@ -161,8 +175,19 @@ export function RecipientRegistration() {
         Yardım almak için aşağıdaki formu doldurun. Bilgileriniz STK tarafından doğrulandıktan sonra bağış alabilirsiniz.
       </p>
 
+      <div style={{ 
+        padding: '12px 16px', 
+        background: '#fef3c7', 
+        borderRadius: '8px', 
+        marginBottom: '20px',
+        fontSize: '13px',
+        color: '#92400e',
+        border: '1px solid #fcd34d',
+      }}>
+        ⚠️ <strong>Not:</strong> Admin ve STK üyeleri yardım başvurusu yapamaz.
+      </div>
+
       <form onSubmit={handleRegister}>
-        {/* Kişisel Bilgiler */}
         <div style={{ marginBottom: '24px' }}>
           <h3 style={{ fontSize: '16px', marginBottom: '16px', color: '#334155' }}>Kişisel Bilgiler</h3>
           
@@ -207,16 +232,15 @@ export function RecipientRegistration() {
               disabled={isSubmitting}
             />
             <p style={{ fontSize: '12px', color: '#94a3b8', marginTop: '4px' }}>
-              TC Kimlik numaranız gizlilik için hash'lenerek saklanır
+              TC Kimlik numaranız gizlilik için hashlenerek saklanır
             </p>
           </div>
         </div>
 
-        {/* Konum ve İhtiyaç */}
         <div style={{ marginBottom: '24px' }}>
-          <h3 style={{ fontSize: '16px', marginBottom: '16px', color: '#334155' }}>Konum ve İhtiyaç</h3>
+          <h3 style={{ fontSize: '16px', marginBottom: '16px', color: '#334155' }}>Konum ve Aile Bilgileri</h3>
           
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '16px' }}>
             <div>
               <label style={{ display: 'block', marginBottom: '6px', fontWeight: '500', fontSize: '14px' }}>
                 Konum *
@@ -232,26 +256,6 @@ export function RecipientRegistration() {
 
             <div>
               <label style={{ display: 'block', marginBottom: '6px', fontWeight: '500', fontSize: '14px' }}>
-                İhtiyaç Kategorisi
-              </label>
-              <select
-                value={needCategory}
-                onChange={(e) => setNeedCategory(e.target.value)}
-                disabled={isSubmitting}
-              >
-                <option value="Gıda">Gıda</option>
-                <option value="Giyim">Giyim</option>
-                <option value="Barınma">Barınma</option>
-                <option value="Sağlık">Sağlık</option>
-                <option value="Eğitim">Eğitim</option>
-                <option value="Diğer">Diğer</option>
-              </select>
-            </div>
-          </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '16px', marginTop: '16px' }}>
-            <div>
-              <label style={{ display: 'block', marginBottom: '6px', fontWeight: '500', fontSize: '14px' }}>
                 Aile Büyüklüğü
               </label>
               <input
@@ -263,69 +267,123 @@ export function RecipientRegistration() {
                 disabled={isSubmitting}
               />
             </div>
+          </div>
 
-            <div>
-              <label style={{ display: 'block', marginBottom: '6px', fontWeight: '500', fontSize: '14px' }}>
-                Durum Açıklaması
-              </label>
-              <input
-                type="text"
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                placeholder="Kısa açıklama (hasar durumu, özel ihtiyaçlar vb.)"
-                disabled={isSubmitting}
-              />
-            </div>
+          <div style={{ marginTop: '16px' }}>
+            <label style={{ display: 'block', marginBottom: '6px', fontWeight: '500', fontSize: '14px' }}>
+              Durum Açıklaması
+            </label>
+            <textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Durumunuzu kısaca açıklayın (hasar durumu, özel ihtiyaçlar vb.)"
+              disabled={isSubmitting}
+              rows={3}
+              style={{ width: '100%', resize: 'vertical' }}
+            />
           </div>
         </div>
 
-        {/* Kanıt Yükleme */}
         <div style={{ marginBottom: '24px' }}>
-          <h3 style={{ fontSize: '16px', marginBottom: '16px', color: '#334155' }}>Kanıt Belgesi</h3>
+          <h3 style={{ fontSize: '16px', marginBottom: '16px', color: '#334155' }}>Gerekli Belgeler</h3>
           
-          <div style={{ 
-            border: '2px dashed #e2e8f0', 
-            borderRadius: '12px', 
-            padding: '24px',
-            textAlign: 'center',
-            background: '#f8fafc',
-          }}>
-            <input
-              type="file"
-              accept="image/*"
-              onChange={(e) => setEvidenceFile(e.target.files?.[0] || null)}
-              disabled={isSubmitting}
-              style={{ display: 'none' }}
-              id="evidence-upload"
-            />
-            <label 
-              htmlFor="evidence-upload" 
-              style={{ 
-                cursor: isSubmitting ? 'not-allowed' : 'pointer',
-                display: 'block',
-              }}
-            >
-              {evidenceFile ? (
-                <div>
-                  <div style={{ fontSize: '14px', color: '#059669', fontWeight: '500' }}>
-                    {evidenceFile.name}
-                  </div>
-                  <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '4px' }}>
-                    {(evidenceFile.size / 1024 / 1024).toFixed(2)} MB
-                  </div>
-                </div>
-              ) : (
-                <div>
-                  <div style={{ fontSize: '14px', color: '#64748b' }}>
-                    Hasar fotoğrafı veya belge yükleyin
-                  </div>
-                  <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '4px' }}>
-                    PNG, JPG (max 10MB) - Walrus'a yüklenir
-                  </div>
-                </div>
-              )}
+          <div style={{ marginBottom: '16px' }}>
+            <label style={{ display: 'block', marginBottom: '8px', fontWeight: '500', fontSize: '14px' }}>
+              📄 İkametgah Belgesi * (e-Devlet'ten alınabilir)
             </label>
+            <div style={{ 
+              border: '2px dashed #e2e8f0', 
+              borderRadius: '12px', 
+              padding: '20px',
+              textAlign: 'center',
+              background: residenceFile ? '#f0fdf4' : '#f8fafc',
+              borderColor: residenceFile ? '#86efac' : '#e2e8f0',
+            }}>
+              <input
+                type="file"
+                accept="image/*,.pdf"
+                onChange={(e) => setResidenceFile(e.target.files?.[0] || null)}
+                disabled={isSubmitting}
+                style={{ display: 'none' }}
+                id="residence-upload"
+              />
+              <label 
+                htmlFor="residence-upload" 
+                style={{ cursor: isSubmitting ? 'not-allowed' : 'pointer', display: 'block' }}
+              >
+                {residenceFile ? (
+                  <div>
+                    <div style={{ fontSize: '14px', color: '#059669', fontWeight: '500' }}>
+                      ✅ {residenceFile.name}
+                    </div>
+                    <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '4px' }}>
+                      {(residenceFile.size / 1024 / 1024).toFixed(2)} MB
+                    </div>
+                  </div>
+                ) : (
+                  <div>
+                    <div style={{ fontSize: '14px', color: '#64748b' }}>
+                      İkametgah belgenizi yükleyin
+                    </div>
+                    <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '4px' }}>
+                      PNG, JPG, PDF (max 10MB)
+                    </div>
+                  </div>
+                )}
+              </label>
+            </div>
           </div>
+
+          <div>
+            <label style={{ display: 'block', marginBottom: '8px', fontWeight: '500', fontSize: '14px' }}>
+              💰 Gelir Belgesi * (Maaş bordrosu, SGK dökümü vb.)
+            </label>
+            <div style={{ 
+              border: '2px dashed #e2e8f0', 
+              borderRadius: '12px', 
+              padding: '20px',
+              textAlign: 'center',
+              background: incomeFile ? '#f0fdf4' : '#f8fafc',
+              borderColor: incomeFile ? '#86efac' : '#e2e8f0',
+            }}>
+              <input
+                type="file"
+                accept="image/*,.pdf"
+                onChange={(e) => setIncomeFile(e.target.files?.[0] || null)}
+                disabled={isSubmitting}
+                style={{ display: 'none' }}
+                id="income-upload"
+              />
+              <label 
+                htmlFor="income-upload" 
+                style={{ cursor: isSubmitting ? 'not-allowed' : 'pointer', display: 'block' }}
+              >
+                {incomeFile ? (
+                  <div>
+                    <div style={{ fontSize: '14px', color: '#059669', fontWeight: '500' }}>
+                      ✅ {incomeFile.name}
+                    </div>
+                    <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '4px' }}>
+                      {(incomeFile.size / 1024 / 1024).toFixed(2)} MB
+                    </div>
+                  </div>
+                ) : (
+                  <div>
+                    <div style={{ fontSize: '14px', color: '#64748b' }}>
+                      Gelir belgenizi yükleyin
+                    </div>
+                    <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '4px' }}>
+                      PNG, JPG, PDF (max 10MB)
+                    </div>
+                  </div>
+                )}
+              </label>
+            </div>
+          </div>
+
+          <p style={{ fontSize: '12px', color: '#94a3b8', marginTop: '12px' }}>
+            🔒 Belgeleriniz Walrus decentralized storage'a yüklenir ve STK tarafından incelenir.
+          </p>
         </div>
 
         {uploadProgress && (
@@ -337,7 +395,7 @@ export function RecipientRegistration() {
             fontSize: '14px',
             color: '#475569',
           }}>
-            {uploadProgress}
+            ⏳ {uploadProgress}
           </div>
         )}
 
@@ -349,11 +407,11 @@ export function RecipientRegistration() {
 
         <button
           type="submit"
-          disabled={isSubmitting}
+          disabled={isSubmitting || !currentAccount}
           className="btn-primary"
           style={{ width: '100%', padding: '14px' }}
         >
-          {isSubmitting ? 'Kaydediliyor...' : 'Başvuru Yap'}
+          {!currentAccount ? 'Önce Cüzdan Bağlayın' : isSubmitting ? 'Kaydediliyor...' : 'Başvuru Yap'}
         </button>
       </form>
     </div>
