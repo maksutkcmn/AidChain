@@ -407,16 +407,58 @@ export function DonationForm() {
       )}
 
       {txDigest && (
-        <p>
-          View transaction in Explorer:{' '}
-          <a
-            href={`https://suiexplorer.com/txblock/${txDigest}?network=testnet`}
-            target="_blank"
-            rel="noreferrer"
-          >
-            {txDigest}
-          </a>
-        </p>
+        <div style={{ marginTop: '20px' }}>
+          <p>
+            View transaction in Explorer:{' '}
+            <a
+              href={`https://suiexplorer.com/txblock/${txDigest}?network=testnet`}
+              target="_blank"
+              rel="noreferrer"
+            >
+              {txDigest}
+            </a>
+          </p>
+          
+          {/* NFT Mint Suggestion */}
+          <div style={{
+            marginTop: '15px',
+            padding: '15px 20px',
+            background: 'linear-gradient(135deg, #fef3c7 0%, #fde68a 100%)',
+            borderRadius: '12px',
+            border: '2px solid #f59e0b',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px' }}>
+              <span style={{ fontSize: '24px' }}>🏆</span>
+              <strong style={{ color: '#92400e' }}>Mint Your Impact NFT!</strong>
+            </div>
+            <p style={{ margin: '0 0 12px 0', color: '#78350f', fontSize: '14px' }}>
+              Your donation of <strong>{amount} SUI</strong> qualifies for an Impact NFT certificate.
+              Show your contribution to the world!
+            </p>
+            <a
+              href="#"
+              onClick={(e) => {
+                e.preventDefault();
+                window.location.hash = '';
+                // Trigger tab change - this is a simple approach
+                const event = new CustomEvent('switchTab', { detail: 'impact-nft' });
+                window.dispatchEvent(event);
+              }}
+              style={{
+                display: 'inline-block',
+                padding: '10px 20px',
+                background: 'linear-gradient(135deg, #FFD700 0%, #FFA500 100%)',
+                color: '#000',
+                borderRadius: '8px',
+                textDecoration: 'none',
+                fontWeight: 'bold',
+                fontSize: '14px',
+              }}
+            >
+              🎖️ Go to Impact NFT Panel
+            </a>
+          </div>
+        </div>
       )}
     </div>
   );

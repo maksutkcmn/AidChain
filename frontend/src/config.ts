@@ -2,12 +2,18 @@
 // AidChain Configuration
 
 export const AIDCHAIN_PACKAGE_ID =
-  '0x1157d993f30167c9d5552d61d5a0e838871f6fe3b1e36312beeb5b8825891ce1';
+  '0xa9d1b16dabcfa0460b3d5a9fba41c41fd50c03ade5ed9835f619c1108a9d85a1';
 
 export const AIDCHAIN_REGISTRY_ID =
   '0x5763027400406393cc10ae18707cb9b9e087ddf618f550db57fc924474608e49';
 
 export const REGISTRY_INITIAL_SHARED_VERSION = 670251448;
+
+// Impact NFT Configuration
+export const IMPACT_COUNTER_ID =
+  '0x7439821e0988adde7a9756212432373ff9b6e54042bf43acf42a550cb46d8a8a';
+
+export const IMPACT_COUNTER_INITIAL_SHARED_VERSION = 670251441;
 
 // Walrus Testnet URLs
 export const WALRUS_AGGREGATOR_URL = 'https://aggregator.walrus-testnet.walrus.space';

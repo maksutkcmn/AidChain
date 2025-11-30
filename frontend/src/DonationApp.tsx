@@ -7,10 +7,11 @@ import { RecipientList } from './RecipientList';
 import { VerifierManagement } from './VerifierManagement';
 import { DAOPanel } from './DAOPanel';
 import { Dashboard } from './Dashboard';
+import { ImpactNFTPanel } from './ImpactNFTPanel';
 import { AIDCHAIN_REGISTRY_ID } from './config';
 
 export function DonationApp() {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'donate' | 'packages' | 'register' | 'recipients' | 'dao-members' | 'dao-voting'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'donate' | 'packages' | 'register' | 'recipients' | 'dao-members' | 'dao-voting' | 'impact-nft'>('dashboard');
 
   return (
     <div className="app-container">
@@ -89,6 +90,13 @@ export function DonationApp() {
         >
           Voting
         </button>
+        <button
+          onClick={() => setActiveTab('impact-nft')}
+          className={`tab-button ${activeTab === 'impact-nft' ? 'active' : ''}`}
+          style={{ background: 'linear-gradient(135deg, #FFD700 0%, #FFA500 100%)', color: '#000' }}
+        >
+          🏆 Impact NFT
+        </button>
       </div>
 
       <main className="main-layout">
@@ -131,6 +139,12 @@ export function DonationApp() {
         {activeTab === 'dao-voting' && (
           <section style={{ gridColumn: '1 / -1' }}>
             <DAOPanel />
+          </section>
+        )}
+
+        {activeTab === 'impact-nft' && (
+          <section style={{ gridColumn: '1 / -1' }}>
+            <ImpactNFTPanel />
           </section>
         )}
       </main>
