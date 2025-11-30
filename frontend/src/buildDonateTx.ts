@@ -1,5 +1,6 @@
 // src/buildDonateTx.ts
 import { Transaction } from '@mysten/sui/transactions';
+import { bcs } from '@mysten/sui/bcs';
 import { AIDCHAIN_PACKAGE_ID, AIDCHAIN_REGISTRY_ID, REGISTRY_INITIAL_SHARED_VERSION } from './config';
 
 /**
@@ -12,19 +13,34 @@ import { AIDCHAIN_PACKAGE_ID, AIDCHAIN_REGISTRY_ID, REGISTRY_INITIAL_SHARED_VERS
  * @param description - Description of the aid package
  * @param location - Location for delivery
  * @param amountSui - Amount in SUI to donate
+ * @param coinObjectId - (Optional) Specific coin to use for donation. Required for sponsored transactions.
  */
 export function buildDonateTx(
   description: string,
   location: string,
   amountSui: number,
+  coinObjectId?: string,
 ) {
   const txb = new Transaction();
 
   const amountMist = BigInt(Math.floor(amountSui * 1_000_000_000));
-  const [donationCoin] = txb.splitCoins(txb.gas, [txb.pure.u64(amountMist)]);
+  
+  // For sponsored transactions, we need to use a specific coin, not txb.gas
+  // For regular transactions, we can use txb.gas
+  let donationCoin;
+  if (coinObjectId) {
+    // Sponsored tx: split from a specific coin
+    [donationCoin] = txb.splitCoins(txb.object(coinObjectId), [txb.pure.u64(amountMist)]);
+  } else {
+    // Regular tx: split from gas coin
+    [donationCoin] = txb.splitCoins(txb.gas, [txb.pure.u64(amountMist)]);
+  }
 
   // Smart contract uses vector<u8> for location and description
+  // Use BCS to properly encode the byte vectors
   const encoder = new TextEncoder();
+  const locationBytes = encoder.encode(location);
+  const descriptionBytes = encoder.encode(description);
 
   txb.moveCall({
     target: `${AIDCHAIN_PACKAGE_ID}::aidchain::create_aid_package`,
@@ -34,8 +50,8 @@ export function buildDonateTx(
         initialSharedVersion: REGISTRY_INITIAL_SHARED_VERSION,
         mutable: true,
       }),
-      txb.pure(encoder.encode(location)),        // location: vector<u8>
-      txb.pure(encoder.encode(description)),     // description: vector<u8>
+      txb.pure(bcs.vector(bcs.u8()).serialize(Array.from(locationBytes))),        // location: vector<u8>
+      txb.pure(bcs.vector(bcs.u8()).serialize(Array.from(descriptionBytes))),     // description: vector<u8>
       donationCoin,                              // donation: Coin<SUI>
     ],
   });

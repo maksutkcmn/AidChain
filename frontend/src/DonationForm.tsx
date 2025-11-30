@@ -3,12 +3,14 @@ import { useState } from 'react';
 import {
   useCurrentAccount,
   useSignAndExecuteTransaction,
+  useSuiClient,
 } from '@mysten/dapp-kit';
 import { buildDonateTx } from './buildDonateTx';
 import { useSponsoredTransaction } from './useSponsoredTransaction';
 
 export function DonationForm() {
   const account = useCurrentAccount();
+  const client = useSuiClient();
   const { mutate: signAndExecute } = useSignAndExecuteTransaction();
   const { executeSponsored, isLoading: sponsoredLoading, isEnabled: sponsoredEnabled } = useSponsoredTransaction();
 
@@ -32,8 +34,6 @@ export function DonationForm() {
       return;
     }
 
-    const txb = buildDonateTx(description, location, amountNumber);
-
     setLoading(true);
     setStatusMsg(null);
     setTxDigest(null);
@@ -43,6 +43,32 @@ export function DonationForm() {
       try {
         setStatusMsg('Preparing gas-free transaction...');
         
+        // Fetch fresh coins at transaction time
+        const coinsResponse = await client.getCoins({
+          owner: account.address,
+          coinType: '0x2::sui::SUI',
+        });
+        
+        const freshCoins = coinsResponse.data.map(c => ({
+          coinObjectId: c.coinObjectId,
+          balance: c.balance,
+        }));
+        
+        // For sponsored transactions, we need to find a coin with enough balance
+        const amountMist = BigInt(Math.floor(amountNumber * 1_000_000_000));
+        const suitableCoin = freshCoins.find(c => BigInt(c.balance) >= amountMist);
+        
+        if (!suitableCoin) {
+          // Calculate total balance
+          const totalBalance = freshCoins.reduce((sum, c) => sum + BigInt(c.balance), BigInt(0));
+          const totalSui = Number(totalBalance) / 1_000_000_000;
+          setLoading(false);
+          setStatusMsg(`Insufficient balance! You have ${totalSui.toFixed(4)} SUI but need ${amountNumber} SUI in a single coin.`);
+          return;
+        }
+        
+        // Pass the coin object ID for sponsored transactions
+        const txb = buildDonateTx(description, location, amountNumber, suitableCoin.coinObjectId);
         const result = await executeSponsored(txb);
 
         setLoading(false);
@@ -60,7 +86,9 @@ export function DonationForm() {
       return;
     }
 
-    // Normal transaction (fallback)
+    // Normal transaction (fallback) - no coin ID needed, uses gas coin
+    const txb = buildDonateTx(description, location, amountNumber);
+
     signAndExecute(
       { transaction: txb },
       {
@@ -89,11 +117,8 @@ export function DonationForm() {
             return;
           }
           
-          if (executionStatus === 'success') {
-            setStatusMsg('Donation successful! Aid package created. A coordinator will assign it to a verified recipient.');
-          } else {
-            setStatusMsg(`Transaction completed. Tx: ${result.digest}`);
-          }
+          // Success - either explicit 'success' status or completed without failure
+          setStatusMsg('Donation successful! Aid package created. A coordinator will assign it to a verified recipient.');
         },
         onError: (err: any) => {
           setLoading(false);

@@ -62,6 +62,7 @@ app.post('/api/sponsor', async (req, res) => {
   } catch (error) {
     console.error('Sponsor error:', error.message);
     console.error('Sponsor error details:', JSON.stringify(error.errors || [], null, 2));
+    console.error('Full error object:', JSON.stringify(error, Object.getOwnPropertyNames(error), 2));
     res.status(error.status || 500).json({ 
       error: error.message,
       details: error.errors || [],
